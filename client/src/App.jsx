@@ -203,6 +203,129 @@ function funStats(teams) {
     stats.push(stat)
   }
 
+  // Average buy-in ownership of the original draft (their first GW's squad) —
+  // who built their template from day one rather than buying into it later.
+  push(
+    'Born Template',
+    'shame',
+    ok
+      .map((t) => {
+        const drafted = t.report.gws[0].picks.filter(
+          (p) => p.isInitial && p.ownershipPct != null
+        )
+        if (!drafted.length) return null
+        const avg = drafted.reduce((s, p) => s + p.ownershipPct, 0) / drafted.length
+        const worst = drafted.reduce((a, b) => (b.ownershipPct > a.ownershipPct ? b : a))
+        return {
+          label: t.entryName,
+          sort: avg,
+          value: `${avg.toFixed(1)}% avg draft`,
+          extra: `${worst.name} ${worst.ownershipPct}%`,
+          cardValue: `${avg.toFixed(1)}% · ${worst.name} ${worst.ownershipPct}%`,
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.sort - a.sort),
+    'Average buy-in ownership of the original draft squad — template from day one.',
+    undefined,
+    { label: 'Team', value: 'Avg draft own', extra: 'Biggest anchor' }
+  )
+
+  // Same, for Wildcard signings — who spent their WC building a template.
+  push(
+    'Cookie-Cutter WC',
+    'shame',
+    ok
+      .map((t) => {
+        const buys = []
+        for (const g of t.report.gws)
+          if (g.chip === 'wildcard')
+            for (const p of g.picks)
+              if (p.justBought && p.ownershipPct != null) buys.push(p)
+        if (!buys.length) return null
+        const avg = buys.reduce((s, p) => s + p.ownershipPct, 0) / buys.length
+        const worst = buys.reduce((a, b) => (b.ownershipPct > a.ownershipPct ? b : a))
+        return {
+          label: t.entryName,
+          sort: avg,
+          value: `${avg.toFixed(1)}% avg · ${buys.length} signings`,
+          extra: `${worst.name} ${worst.ownershipPct}%`,
+          cardValue: `${avg.toFixed(1)}% across ${buys.length} signings`,
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.sort - a.sort),
+    'Average buy-in ownership of Wildcard signings — who spent their WC building a template.',
+    'no wildcards played yet',
+    { label: 'Team', value: 'Avg WC own', extra: 'Biggest anchor' }
+  )
+
+  // Most low-owned buys that blanked — punts are only brave when they haul.
+  push(
+    'Differential Dud',
+    'shame',
+    ok
+      .map((t) => {
+        const duds = []
+        for (const g of t.report.gws)
+          for (const p of g.picks)
+            if (p.counted && p.eligible && p.points <= 2 && p.minutes !== 0)
+              duds.push({ name: p.name, gw: g.event, pts: p.points })
+        const worst = [...duds].sort((a, b) => a.pts - b.pts)[0]
+        return {
+          label: t.entryName,
+          sort: duds.length,
+          value: `${duds.length} blank punt${duds.length === 1 ? '' : 's'}`,
+          extra: worst ? `${worst.name} ${worst.pts} pts GW${worst.gw}` : '—',
+          valueTip: duds.length
+            ? duds.map((d) => `${d.name} — ${d.pts} pts in GW${d.gw}`)
+            : null,
+          cardValue: `${duds.length} blank punts`,
+        }
+      })
+      .sort((a, b) => b.sort - a.sort)
+      .slice(0, 15),
+    'Most low-owned buys that blanked (≤2 pts) when played — punts are only brave when they haul.',
+    'every punt landed — suspicious',
+    { label: 'Team', value: 'Blank punts', extra: 'Worst offender' }
+  )
+
+  // Total -4/-8 hit points taken — plus the most-owned player chased during a
+  // hit GW (the template they paid extra for).
+  push(
+    'Hit Chaser',
+    'shame',
+    ok
+      .map((t) => {
+        let hitPts = 0,
+          hitGws = 0,
+          chased = null
+        for (const g of t.report.gws) {
+          if (g.transfersCost >= 0) continue
+          hitPts -= g.transfersCost
+          hitGws++
+          for (const p of g.picks)
+            if (
+              p.justBought &&
+              p.ownershipPct != null &&
+              (!chased || p.ownershipPct > chased.ownershipPct)
+            )
+              chased = p
+        }
+        return {
+          label: t.entryName,
+          sort: hitPts,
+          value: `-${hitPts} pts · ${hitGws} hit${hitGws === 1 ? '' : 's'}`,
+          extra: chased ? `${chased.name} ${chased.ownershipPct}%` : '—',
+          cardValue: `-${hitPts} pts${chased ? ` · ${chased.name}` : ''}`,
+        }
+      })
+      .sort((a, b) => b.sort - a.sort),
+    'Most points burned on transfer hits — and the most-owned player they paid extra to chase.',
+    'nobody took a hit — patient or lucky',
+    { label: 'Team', value: 'Hits', extra: 'Chased' }
+  )
+
   // Highest average buy-time ownership across the latest squad.
   push(
     'Most Template',
@@ -294,10 +417,12 @@ function funStats(teams) {
     'nobody made 5+ differential buys — pure template league'
   )
 
-  // Shame award: biggest bandwagon buy (highest buy-in ownership played).
+  // The Cave-In: each team's highest-ownership *transfer* — who resisted the
+  // template longest before finally buying in. Bottom of the table = still
+  // holding out.
   push(
-    'Template Traitor',
-    'shame',
+    'Caved In',
+    'good',
     ok
       .map((t) => {
         let worst = null
@@ -311,12 +436,16 @@ function funStats(teams) {
             )
               worst = p
         return worst
-          ? { label: t.entryName, sort: worst.ownershipPct, value: `${worst.name} ${worst.ownershipPct}%` }
+          ? {
+              label: t.entryName,
+              sort: worst.ownershipPct,
+              value: `${worst.name} ${worst.ownershipPct}%`,
+            }
           : null
       })
       .filter(Boolean)
       .sort((a, b) => b.sort - a.sort),
-    'Highest-ownership transfer actually played — the biggest bandwagon anyone bought into (initial squad excluded).'
+    'Highest-ownership transfer actually played — who resisted the template longest before caving. Bottom of the table is still holding out.'
   )
 
   // Each team's lowest-ownership buy among players who actually played.
@@ -389,41 +518,43 @@ function funStats(teams) {
   )
 
   // --- player stats: build league-wide ownership from latest squads ---
-  const owners = new Map() // elementId -> {name, teams:Set}
+  const owners = new Map() // elementId -> {name, teams:Set, nowOwn}
   ok.forEach((t, i) => {
     for (const p of t.report.gws.at(-1).picks) {
-      const o = owners.get(p.id) ?? { name: p.name, teams: new Set() }
+      const o = owners.get(p.id) ?? { name: p.name, teams: new Set(), nowOwn: p.nowOwn }
       o.teams.add(i)
       owners.set(p.id, o)
     }
   })
 
-  // Most-owned player across league squads.
+  // Template Dodger: the biggest global template each team refuses to pick.
+  // Ranked by global ownership (the app's definition of template), with the
+  // league ownership count as context — dodging Haaland beats dodging a
+  // league-only trend.
+  const globalTemplates = [...owners.entries()]
+    .map(([id, o]) => ({ id, name: o.name, count: o.teams.size, teams: o.teams, global: o.nowOwn ?? 0 }))
+    .sort((a, b) => b.global - a.global || b.count - a.count || a.name.localeCompare(b.name))
   push(
-    'League Template',
-    'player',
-    [...owners.values()]
-      .map((o) => {
-        const hipsters = ok
-          .filter((_, i) => !o.teams.has(i))
-          .map((t) => t.entryName)
-        return {
-          label: o.name,
-          sort: o.teams.size,
-          value: `${o.teams.size}/${ok.length} teams`,
-          extra:
-            hipsters.length === 0
-              ? '—'
-              : hipsters.length < 4
-                ? hipsters.join(', ')
-                : `${hipsters.length} teams`,
-        }
+    'Template Dodger',
+    'good',
+    ok
+      .map((t, i) => {
+        const dodge = globalTemplates.find((o) => !o.teams.has(i))
+        return dodge
+          ? {
+              label: t.entryName,
+              sort: dodge.global,
+              value: `${dodge.name}`,
+              extra: `${dodge.global}%`,
+              extra2: `${dodge.count}/${ok.length} teams`,
+            }
+          : null
       })
-      .sort((a, b) => b.sort - a.sort || a.label.localeCompare(b.label))
-      .slice(0, 15),
-    'Most-owned player across league squads — the template everyone copied.',
-    undefined,
-    { extra: 'Not owned by' }
+      .filter(Boolean)
+      .sort((a, b) => b.sort - a.sort),
+    'The most globally-owned player each team refused to pick — biggest template holdout wins.',
+    'everyone owns the entire template — no dodgers',
+    { label: 'Team', value: 'Dodge', extra: 'Global own', extra2: 'League' }
   )
 
   // Lone Wolf: per-GW uniqueness — a player's bonus counts only for GWs where
@@ -454,7 +585,7 @@ function funStats(teams) {
   })
   push(
     'Lone Wolf',
-    'player',
+    'good',
     [...wolfBonus.values()]
       .map((w) => ({ label: w.team, sort: w.bonus, value: `${w.name} +${w.bonus}` }))
       .sort((a, b) => b.sort - a.sort)
@@ -573,18 +704,16 @@ function funStats(teams) {
           for (const p of g.picks)
             if (p.justBought && p.prevPts != null && p.prevPts >= 10)
               jumps.push({ name: p.name, gw: g.event, prevPts: p.prevPts })
-        if (!jumps.length) return null
         return {
           label: t.entryName,
           sort: jumps.length,
-          value: jumps.map((j) => j.name).join(', '),
+          value: jumps.map((j) => j.name).join(', ') || '—',
           valueTip: jumps.map(
             (j) => `${j.name} — ${j.prevPts} pts in GW${j.gw - 1}, bought GW${j.gw}`
           ),
           cardValue: `${jumps.length} chased buys`,
         }
       })
-      .filter(Boolean)
       .sort((a, b) => b.sort - a.sort)
       .slice(0, 15),
     'Bought a player the week right after his big haul — chasing yesterday\'s points.',
@@ -597,13 +726,21 @@ function funStats(teams) {
     'Sold Too Early',
     'shame',
     ok
-      .flatMap((t) =>
-        (t.report.soldEarly ?? []).map((s) => ({
+      .map((t) => {
+        const sales = t.report.soldEarly ?? []
+        const worst = sales.sort((a, b) => b.points - a.points)[0]
+        return {
           label: t.entryName,
-          sort: s.points,
-          value: `${s.name} · ${s.points} pts in GW${s.hauled} after sale`,
-        }))
-      )
+          sort: worst?.points ?? 0,
+          value: worst
+            ? `${worst.name} · ${worst.points} pts in GW${worst.hauled} after sale`
+            : '—',
+          valueTip: sales.length
+            ? sales.map((s) => `${s.name} — ${s.points} pts in GW${s.hauled}`)
+            : null,
+          cardValue: worst ? `${worst.name} GW${worst.hauled}` : undefined,
+        }
+      })
       .sort((a, b) => b.sort - a.sort)
       .slice(0, 15),
     'Sold a differential right before he hauled — his buy-in ownership still qualified.',
@@ -639,9 +776,40 @@ function funStats(teams) {
     { extra: 'Copied from' }
   )
 
-  // Wall of shame first, then honours, then neutral player stats.
+  // Wall of shame first (most template-y to least — diff-attempts-gone-wrong
+  // rank last), then honours (proven scouting to luck-assisted), then player stats.
   const kindOrder = { shame: 0, good: 1, player: 2 }
-  return stats.sort((a, b) => (kindOrder[a.kind] ?? 3) - (kindOrder[b.kind] ?? 3))
+  const titleRank = {
+    shame: [
+      'Most Template',
+      'Born Template',
+      'Cookie-Cutter WC',
+      'Bandwagon Jumper',
+      'Hit Chaser',
+      'Doppelgängers',
+      'Bag Holder',
+      'Differential Dud',
+      'Bench Regret',
+    ],
+    good: [
+      'Scout Master',
+      'Template Buster',
+      'Dead-Eye',
+      'Deepest Cut',
+      'Boldest Armband',
+      'Heist of the Season',
+      'Lone Wolf',
+      'Rode the Wave',
+      'Template Dodger',
+      'Caved In',
+    ],
+  }
+  const rankOf = (s) => titleRank[s.kind]?.indexOf(s.title) ?? 99
+  return stats.sort(
+    (a, b) =>
+      (kindOrder[a.kind] ?? 3) - (kindOrder[b.kind] ?? 3) ||
+      (rankOf(a) === -1 ? 99 : rankOf(a)) - (rankOf(b) === -1 ? 99 : rankOf(b))
+  )
 }
 
 // Fixed-position tooltip — escapes the modal's scroll container, flips up when
@@ -702,6 +870,7 @@ function StatModal({ stat, onClose }) {
               <th>{stat.headers?.label ?? 'Team'}</th>
               <th>{stat.headers?.value ?? ''}</th>
               {stat.headers?.extra && <th>{stat.headers.extra}</th>}
+              {stat.headers?.extra2 && <th>{stat.headers.extra2}</th>}
             </tr>
           </thead>
           <tbody>
@@ -713,6 +882,7 @@ function StatModal({ stat, onClose }) {
                   {r.valueTip?.length ? <Tip text={r.value} lines={r.valueTip} /> : r.value}
                 </td>
                 {stat.headers?.extra && <td>{r.extra}</td>}
+                {stat.headers?.extra2 && <td>{r.extra2}</td>}
               </tr>
             ))}
           </tbody>

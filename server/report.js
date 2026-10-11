@@ -64,10 +64,14 @@ export async function buildReport(teamId) {
 
   // Live player points for the in-progress GW (element-summary lags).
   const livePoints = new Map();
+  const liveMinutes = new Map();
   if (currentGw) {
     try {
       const live = await api.live(currentGw);
-      for (const el of live.elements) livePoints.set(el.id, el.stats.total_points);
+      for (const el of live.elements) {
+        livePoints.set(el.id, el.stats.total_points);
+        liveMinutes.set(el.id, el.stats.minutes ?? 0);
+      }
     } catch {
       /* live data unavailable */
     }
@@ -125,9 +129,10 @@ export async function buildReport(teamId) {
       // Collapse per-fixture rows (DGWs) into per-round: sum points, keep selected.
       const byRound = new Map();
       for (const h of s.history) {
-        const r = byRound.get(h.round) ?? { points: 0, selected: 0 };
+        const r = byRound.get(h.round) ?? { points: 0, selected: 0, minutes: 0 };
         r.points += h.total_points;
         r.selected = Math.max(r.selected, h.selected ?? 0);
+        r.minutes = Math.max(r.minutes, h.minutes ?? 0);
         byRound.set(h.round, r);
       }
       summaries.set(id, byRound);
@@ -142,9 +147,11 @@ export async function buildReport(teamId) {
     const data = picksByGw.get(gw);
     const picks = data.picks.map((pick) => {
       const el = elements.get(pick.element);
-      const round = summaries.get(pick.element)?.get(gw) ?? { points: 0, selected: 0 };
+      const round = summaries.get(pick.element)?.get(gw) ?? { points: 0, selected: 0, minutes: 0 };
       const playerPoints =
         gw === currentGw ? (livePoints.get(pick.element) ?? round.points) : round.points;
+      const minutes =
+        gw === currentGw ? (liveMinutes.get(pick.element) ?? round.minutes) : round.minutes;
       const buy = buyRecordFor(pick.element, gw);
       const buyGw = buy?.event ?? entry.started_event ?? 1;
       const buyRounds = summaries.get(pick.element);
@@ -169,6 +176,7 @@ export async function buildReport(teamId) {
         isViceCaptain: pick.is_vice_captain,
         multiplier: pick.multiplier,
         points: playerPoints,
+        minutes,
         buyGw,
         isInitial: buy == null,
         justBought: buy != null && buy.event === gw,
@@ -188,7 +196,9 @@ export async function buildReport(teamId) {
       chip: data.active_chip,
       live: !events.get(gw)?.finished,
       points: data.entry_history?.points ?? 0,
-      transfersCost: data.entry_history?.event_transfers_cost ?? 0,
+      // API reports cost as positive (4 = a -4 hit); store negative so
+      // display logic can treat "< 0 means a hit was taken".
+      transfersCost: -(data.entry_history?.event_transfers_cost ?? 0),
       pointsOnBench: data.entry_history?.points_on_bench ?? 0,
       bonusScored,
       bonusMissed,
