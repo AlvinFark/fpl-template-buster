@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Exec(curl)",
-      "Exec(sleep)"
+      "Exec(sleep)",
+      "Exec(kill)",
+      "Exec(perl)",
+      "Exec(npx)",
+      "Exec(lsof)"
     ]
   }
 }

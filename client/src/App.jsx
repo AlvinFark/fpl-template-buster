@@ -63,7 +63,81 @@ function GwTable({ gw, defaultOpen = false }) {
   )
 }
 
-function TeamModal({ team, onClose }) {
+// Per-team flavor badge from their differential profile.
+function teamTitle(t) {
+  const r = t.report
+  if (!r) return null
+  let diff = 0,
+    n = 0
+  for (const g of r.gws)
+    for (const p of g.picks) {
+      if (!p.counted) continue
+      n++
+      if (p.eligible) diff++
+    }
+  const ratio = n ? diff / n : 0
+  const bonus = r.totals.bonusScored
+  if (diff === 0) return { label: 'Photocopier', kind: 'shame' }
+  if (ratio >= 0.4) return { label: 'Certified Hipster', kind: 'good' }
+  if (ratio >= 0.15) return { label: 'Indie Scout', kind: 'good' }
+  if (bonus >= 8) return { label: 'One-Punt Wonder', kind: 'good' }
+  if (bonus === 0) return { label: 'Unlucky Punk', kind: 'shame' }
+  return { label: 'Template Adjacent', kind: '' }
+}
+
+// Avg buy-in ownership of the latest squad — the team's template index.
+function templatePct(t) {
+  const picks = t.report?.gws.at(-1)?.picks.filter((p) => p.ownershipPct != null)
+  if (!picks?.length) return null
+  return picks.reduce((s, p) => s + p.ownershipPct, 0) / picks.length
+}
+
+// Differential buys actually played (bonus-eligible), across all GWs.
+function diffStarts(t) {
+  return (
+    t.report?.gws.reduce(
+      (s, g) => s + g.picks.filter((p) => p.counted && p.eligible).length,
+      0
+    ) ?? 0
+  )
+}
+
+// Share of played picks that were differential buys — fairer across teams that
+// joined mid-season (fewer GWs = fewer raw starts).
+function diffShare(t) {
+  const r = t.report
+  if (!r) return null
+  let n = 0
+  for (const g of r.gws) for (const p of g.picks) if (p.counted) n++
+  return n ? diffStarts(t) / n : null
+}
+
+// Pair of teams sharing the most players in their latest squads. `later` counts
+// shared players this team bought in a later GW — the likely copier's trail.
+function doppelganger(team, teams) {
+  const myMap = new Map(team.report?.gws.at(-1)?.picks.map((p) => [p.id, p]) ?? [])
+  if (!myMap.size) return null
+  let best = null
+  for (const o of teams) {
+    if (o === team || !o.report) continue
+    const theirMap = new Map(o.report.gws.at(-1)?.picks.map((p) => [p.id, p]) ?? [])
+    let shared = 0,
+      later = 0,
+      earlier = 0
+    for (const [id, p] of myMap) {
+      const q = theirMap.get(id)
+      if (!q) continue
+      shared++
+      if (p.buyGw > q.buyGw) later++
+      else if (p.buyGw < q.buyGw) earlier++
+    }
+    if (!best || shared > best.shared)
+      best = { name: o.entryName, shared, of: myMap.size, later, earlier }
+  }
+  return best
+}
+
+function TeamModal({ team, teams, onClose }) {
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose()
     window.addEventListener('keydown', onKey)
@@ -71,6 +145,7 @@ function TeamModal({ team, onClose }) {
   }, [onClose])
 
   const report = team.report
+  const twin = doppelganger(team, teams)
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -78,10 +153,22 @@ function TeamModal({ team, onClose }) {
           ×
         </button>
         <header className="team-header">
-          <h2>
-            {team.entryName}
-            <small>{team.manager}</small>
-          </h2>
+          <div>
+            <h2>
+              {team.entryName}
+              <small>{team.manager}</small>
+            </h2>
+            {twin && (
+              <p className="doppel">
+                Doppelgänger: {twin.name} — {twin.shared}/{twin.of} players shared
+                {twin.later > twin.earlier
+                  ? ` · you bought ${twin.later} of them later`
+                  : twin.earlier > twin.later
+                    ? ` · they bought ${twin.earlier} of them later`
+                    : ''}
+              </p>
+            )}
+          </div>
           {report && (
             <div className="totals">
               <span>Official {report.totals.points}</span>
@@ -109,9 +196,9 @@ function funStats(teams) {
   const ok = teams.filter((t) => t.report?.gws.length)
   if (!ok.length) return []
   const stats = []
-  const push = (title, kind, rows, desc, emptyText) => {
+  const push = (title, kind, rows, desc, emptyText, headers) => {
     if (!rows.length) return
-    const stat = { title, kind, rows, desc }
+    const stat = { title, kind, rows, desc, headers }
     if (emptyText && rows[0].sort <= 0) stat.empty = emptyText
     stats.push(stat)
   }
@@ -122,9 +209,8 @@ function funStats(teams) {
     'shame',
     ok
       .map((t) => {
-        const owned = t.report.gws.at(-1).picks.filter((p) => p.ownershipPct != null)
-        if (!owned.length) return null
-        const avg = owned.reduce((s, p) => s + p.ownershipPct, 0) / owned.length
+        const avg = templatePct(t)
+        if (avg == null) return null
         return { label: t.entryName, sort: avg, value: `${avg.toFixed(1)}%` }
       })
       .filter(Boolean)
@@ -139,14 +225,11 @@ function funStats(teams) {
     ok
       .map((t) => ({
         label: t.entryName,
-        sort: t.report.gws.reduce(
-          (s, g) => s + g.picks.filter((p) => p.counted && p.eligible).length,
-          0
-        ),
+        sort: diffShare(t) ?? 0,
+        value: `${diffStarts(t)} starts · ${Math.round((diffShare(t) ?? 0) * 100)}%`,
       }))
-      .sort((a, b) => b.sort - a.sort)
-      .map((r) => ({ ...r, value: `${r.sort} diff starts` })),
-    'Most low-owned (<10% at buy) players actually played — trying differentials counts, even when they blank.'
+      .sort((a, b) => b.sort - a.sort),
+    'Highest share of played picks that were low-owned (<10% at buy) — trying differentials counts, even when they blank.'
   )
 
   // Most total bonus earned.
@@ -164,6 +247,53 @@ function funStats(teams) {
     'nobody scouted a differential — pure template league'
   )
 
+  // Biggest single-GW bonus haul.
+  push(
+    'Heist of the Season',
+    'good',
+    ok
+      .map((t) => {
+        let best = { bonus: 0, gw: null }
+        for (const g of t.report.gws)
+          if (g.bonusScored > best.bonus) best = { bonus: g.bonusScored, gw: g.event }
+        return {
+          label: t.entryName,
+          sort: best.bonus,
+          value: `+${best.bonus}${best.gw ? ` in GW${best.gw}` : ''}`,
+        }
+      })
+      .sort((a, b) => b.sort - a.sort),
+    'Biggest bonus haul in a single gameweek — the GW that broke the table.',
+    'no heists yet — the differentials are still loading'
+  )
+
+  // Bonus earned per differential buy — precision over volume. Requires at
+  // least 3 differential buys so one lucky punt on a template team can't win.
+  const zeroAt = ok[0]?.report?.bonusRule?.zeroAt ?? 10
+  push(
+    'Dead-Eye',
+    'good',
+    ok
+      .map((t) => {
+        const buys = new Set()
+        for (const g of t.report.gws)
+          for (const p of g.picks)
+            if (p.counted && p.ownershipPct != null && p.ownershipPct < zeroAt)
+              buys.add(p.id)
+        if (buys.size < 5) return null
+        const eff = t.report.totals.bonusScored / buys.size
+        return {
+          label: t.entryName,
+          sort: eff,
+          value: `+${eff.toFixed(1)}/buy over ${buys.size}`,
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.sort - a.sort),
+    'Bonus points per differential buy (min. 5 buys) — scouting consistency, not one lucky punt.',
+    'nobody made 5+ differential buys — pure template league'
+  )
+
   // Shame award: biggest bandwagon buy (highest buy-in ownership played).
   push(
     'Template Traitor',
@@ -175,7 +305,7 @@ function funStats(teams) {
           for (const p of g.picks)
             if (
               p.counted &&
-              p.buyGw > 1 &&
+              !p.isInitial &&
               p.ownershipPct != null &&
               (!worst || p.ownershipPct > worst.ownershipPct)
             )
@@ -228,23 +358,34 @@ function funStats(teams) {
     'either perfect lineups… or nobody owns a differential worth benching'
   )
 
-  // Most bonus earned through the captain multiplier.
+  // Most bonus earned through the captain multiplier — with the actual calls.
   push(
     'Boldest Armband',
     'good',
     ok
-      .map((t) => ({
-        label: t.entryName,
-        sort: t.report.gws.reduce(
-          (s, g) =>
-            s + g.picks.filter((p) => p.multiplier > 1).reduce((s2, p) => s2 + p.bonus, 0),
-          0
-        ),
-      }))
+      .map((t) => {
+        const calls = []
+        for (const g of t.report.gws)
+          for (const p of g.picks)
+            if (p.multiplier > 1 && p.bonus > 0)
+              calls.push({ name: p.name, gw: g.event, bonus: p.bonus })
+        const callsDesc = calls.sort((a, b) => b.bonus - a.bonus)
+        return {
+          label: t.entryName,
+          sort: calls.reduce((s, c) => s + c.bonus, 0),
+          cardValue: callsDesc[0]
+            ? `${callsDesc[0].name} GW${callsDesc[0].gw} (+${callsDesc[0].bonus})`
+            : undefined,
+          extra: callsDesc
+            .map((c) => `${c.name} GW${c.gw} (+${c.bonus})`)
+            .join(', '),
+        }
+      })
       .sort((a, b) => b.sort - a.sort)
       .map((r) => ({ ...r, value: `+${r.sort}` })),
     'Most bonus points earned through captain multipliers — bravest armband choices.',
-    'everyone captained a template player'
+    'everyone captained a template player',
+    { extra: 'Armband calls' }
   )
 
   // --- player stats: build league-wide ownership from latest squads ---
@@ -262,14 +403,27 @@ function funStats(teams) {
     'League Template',
     'player',
     [...owners.values()]
-      .map((o) => ({
-        label: o.name,
-        sort: o.teams.size,
-        value: `${o.teams.size}/${ok.length} teams`,
-      }))
+      .map((o) => {
+        const hipsters = ok
+          .filter((_, i) => !o.teams.has(i))
+          .map((t) => t.entryName)
+        return {
+          label: o.name,
+          sort: o.teams.size,
+          value: `${o.teams.size}/${ok.length} teams`,
+          extra:
+            hipsters.length === 0
+              ? '—'
+              : hipsters.length < 4
+                ? hipsters.join(', ')
+                : `${hipsters.length} teams`,
+        }
+      })
       .sort((a, b) => b.sort - a.sort || a.label.localeCompare(b.label))
       .slice(0, 15),
-    'Most-owned player across league squads — the template everyone copied.'
+    'Most-owned player across league squads — the template everyone copied.',
+    undefined,
+    { extra: 'Not owned by' }
   )
 
   // Lone Wolf: per-GW uniqueness — a player's bonus counts only for GWs where
@@ -302,7 +456,7 @@ function funStats(teams) {
     'Lone Wolf',
     'player',
     [...wolfBonus.values()]
-      .map((w) => ({ label: w.name, sort: w.bonus, value: `+${w.bonus} · ${w.team}` }))
+      .map((w) => ({ label: w.team, sort: w.bonus, value: `${w.name} +${w.bonus}` }))
       .sort((a, b) => b.sort - a.sort)
       .slice(0, 15),
     'Best bonus earner while uniquely held — bonus only counts for GWs where one team owned the player.',
@@ -310,15 +464,17 @@ function funStats(teams) {
   )
 
   // Rode the Wave: biggest ownership rise between buy-in and now (counted picks).
-  const waveBest = new Map() // elementId -> {name, gap, buy, now, team}
-  ok.forEach((t) => {
+  // Keyed per team so two teams that both bought a riser each get their own row.
+  const waveBest = new Map() // `${teamIdx}-${elementId}` -> {name, gap, buy, now, team}
+  ok.forEach((t, ti) => {
     for (const g of t.report.gws)
       for (const p of g.picks) {
         if (!p.counted || p.ownershipPct == null || p.nowOwn == null) continue
         const gap = p.nowOwn - p.ownershipPct
-        const cur = waveBest.get(p.id)
+        const key = `${ti}-${p.id}`
+        const cur = waveBest.get(key)
         if (gap > 0 && (!cur || gap > cur.gap))
-          waveBest.set(p.id, {
+          waveBest.set(key, {
             name: p.name,
             gap,
             buy: p.ownershipPct,
@@ -327,22 +483,195 @@ function funStats(teams) {
           })
       }
   })
+  // Merge identical rows: same player bought at the same price by several
+  // teams (e.g. GW1 draft picks) collapses into one row listing them all.
+  const mergeWaves = (map) =>
+    Object.values(
+      [...map.values()].reduce((acc, w) => {
+        const k = `${w.name}|${w.buy}|${w.now}`
+        const cur = acc[k] ?? { ...w, teams: [] }
+        cur.teams.push(w.team)
+        acc[k] = cur
+        return acc
+      }, {})
+    )
   push(
     'Rode the Wave',
-    'player',
-    [...waveBest.values()]
+    'good',
+    mergeWaves(waveBest)
       .map((w) => ({
         label: w.name,
-        sort: w.gap,
-        value: `${w.buy}% → ${w.now}% · ${w.team}`,
+        sort: w.buy > 0 ? w.now / w.buy : w.now,
+        value:
+          w.teams.length > 1
+            ? `${w.teams[0]} and ${w.teams.length - 1} others`
+            : w.teams[0],
+        valueTip: w.teams.length > 1 ? w.teams : null,
+        extra: `${w.buy}% → ${w.now}%`,
+        cardLabel: w.teams[0],
+        cardValue: `${w.name} ${w.buy}% → ${w.now}%`,
       }))
       .sort((a, b) => b.sort - a.sort)
       .slice(0, 15),
     'Biggest ownership rise since buy-in — spotted before the bandwagon.',
-    'no bandwagons caught — everyone bought late'
+    'no bandwagons caught — everyone bought late',
+    { label: 'Player', value: 'Teams', extra: 'Rise' }
   )
 
-  return stats
+  // Bag Holder: biggest ownership drop since buy-in — bought the hype,
+  // watched everyone else sell.
+  const holderBest = new Map() // `${teamIdx}-${elementId}` -> {name, drop, buy, now, team}
+  ok.forEach((t, ti) => {
+    for (const g of t.report.gws)
+      for (const p of g.picks) {
+        if (!p.counted || p.ownershipPct == null || p.nowOwn == null) continue
+        const drop = p.ownershipPct - p.nowOwn
+        const key = `${ti}-${p.id}`
+        const cur = holderBest.get(key)
+        if (drop > 0 && (!cur || drop > cur.drop))
+          holderBest.set(key, {
+            name: p.name,
+            drop,
+            buy: p.ownershipPct,
+            now: p.nowOwn,
+            team: t.entryName,
+          })
+      }
+  })
+  push(
+    'Bag Holder',
+    'shame',
+    mergeWaves(holderBest)
+      .map((w) => ({
+        label: w.name,
+        sort: w.now > 0 ? w.buy / w.now : w.buy,
+        value:
+          w.teams.length > 1
+            ? `${w.teams[0]} and ${w.teams.length - 1} others`
+            : w.teams[0],
+        valueTip: w.teams.length > 1 ? w.teams : null,
+        extra: `${w.buy}% → ${w.now}%`,
+        cardLabel: w.teams[0],
+        cardValue: `${w.name} ${w.buy}% → ${w.now}%`,
+      }))
+      .sort((a, b) => b.sort - a.sort)
+      .slice(0, 15),
+    'Biggest ownership drop since buy-in — bought the hype, left holding the bag.',
+    'everyone held through the hype — for better or worse',
+    { label: 'Player', value: 'Teams', extra: 'Fall' }
+  )
+
+  // Bandwagon Jumper: bought a player the GW right after his big haul,
+  // grouped per team — who chased, which players, how many and when.
+  push(
+    'Bandwagon Jumper',
+    'shame',
+    ok
+      .map((t) => {
+        const jumps = []
+        for (const g of t.report.gws)
+          for (const p of g.picks)
+            if (p.justBought && p.prevPts != null && p.prevPts >= 10)
+              jumps.push({ name: p.name, gw: g.event, prevPts: p.prevPts })
+        if (!jumps.length) return null
+        return {
+          label: t.entryName,
+          sort: jumps.length,
+          value: jumps.map((j) => j.name).join(', '),
+          valueTip: jumps.map(
+            (j) => `${j.name} — ${j.prevPts} pts in GW${j.gw - 1}, bought GW${j.gw}`
+          ),
+          cardValue: `${jumps.length} chased buys`,
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.sort - a.sort)
+      .slice(0, 15),
+    'Bought a player the week right after his big haul — chasing yesterday\'s points.',
+    'nobody chased last week\'s haul — disciplined or lucky',
+    { label: 'Team', value: 'Chased buys' }
+  )
+
+  // Sold Too Early: sold a differential who then hauled while still low-owned.
+  push(
+    'Sold Too Early',
+    'shame',
+    ok
+      .flatMap((t) =>
+        (t.report.soldEarly ?? []).map((s) => ({
+          label: t.entryName,
+          sort: s.points,
+          value: `${s.name} · ${s.points} pts in GW${s.hauled} after sale`,
+        }))
+      )
+      .sort((a, b) => b.sort - a.sort)
+      .slice(0, 15),
+    'Sold a differential right before he hauled — his buy-in ownership still qualified.',
+    'nobody sold a future hauler — diamond hands'
+  )
+
+  // Doppelgängers: rank the likely copiers — whoever bought more of the shared
+  // players later than the other team.
+  const pairs = []
+  for (let i = 0; i < ok.length; i++) {
+    for (let j = i + 1; j < ok.length; j++) {
+      const twin = doppelganger(ok[i], [ok[j]])
+      if (!twin) continue
+      const copier =
+        twin.later > twin.earlier ? ok[i] : twin.earlier > twin.later ? ok[j] : null
+      const copyee = copier === ok[i] ? ok[j] : copier === ok[j] ? ok[i] : null
+      pairs.push({
+        label: copier?.entryName ?? `${ok[i].entryName} & ${ok[j].entryName}`,
+        sort: twin.shared,
+        value: `${twin.shared}/${twin.of} shared`,
+        extra: copyee
+          ? `${copyee.entryName} · ${Math.max(twin.later, twin.earlier)} bought later`
+          : 'mutual — same timing',
+      })
+    }
+  }
+  push(
+    'Doppelgängers',
+    'shame',
+    pairs.sort((a, b) => b.sort - a.sort).slice(0, 15),
+    'Teams with near-identical squads — whoever bought shared players later is the likely copier.',
+    undefined,
+    { extra: 'Copied from' }
+  )
+
+  // Wall of shame first, then honours, then neutral player stats.
+  const kindOrder = { shame: 0, good: 1, player: 2 }
+  return stats.sort((a, b) => (kindOrder[a.kind] ?? 3) - (kindOrder[b.kind] ?? 3))
+}
+
+// Fixed-position tooltip — escapes the modal's scroll container, flips up when
+// near the viewport bottom.
+function Tip({ text, lines }) {
+  const [pos, setPos] = useState(null)
+  return (
+    <span
+      className="tip"
+      onMouseEnter={(e) => {
+        const r = e.currentTarget.getBoundingClientRect()
+        const h = lines.length * 18 + 14
+        const w = 220
+        setPos({
+          left: Math.min(r.left, window.innerWidth - w - 8),
+          top: r.bottom + 4 + h < window.innerHeight ? r.bottom + 4 : r.top - h - 4,
+        })
+      }}
+      onMouseLeave={() => setPos(null)}
+    >
+      {text}
+      {pos && (
+        <span className="tip-body" style={{ top: pos.top, left: pos.left }}>
+          {lines.map((l) => (
+            <div key={l}>{l}</div>
+          ))}
+        </span>
+      )}
+    </span>
+  )
 }
 
 function StatModal({ stat, onClose }) {
@@ -354,7 +683,10 @@ function StatModal({ stat, onClose }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal modal-narrow" onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`modal ${stat.headers ? 'modal-wide' : 'modal-narrow'}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <button className="modal-close" onClick={onClose} aria-label="Close">
           ×
         </button>
@@ -367,16 +699,20 @@ function StatModal({ stat, onClose }) {
           <thead>
             <tr>
               <th>#</th>
-              <th>Team</th>
-              <th></th>
+              <th>{stat.headers?.label ?? 'Team'}</th>
+              <th>{stat.headers?.value ?? ''}</th>
+              {stat.headers?.extra && <th>{stat.headers.extra}</th>}
             </tr>
           </thead>
           <tbody>
             {stat.rows.map((r, i) => (
-              <tr key={r.label} className={i === 0 ? 'stat-winner' : ''}>
+              <tr key={`${r.label}-${i}`} className={i === 0 ? 'stat-winner' : ''}>
                 <td>{i + 1}</td>
                 <td>{r.label}</td>
-                <td>{r.value}</td>
+                <td>
+                  {r.valueTip?.length ? <Tip text={r.value} lines={r.valueTip} /> : r.value}
+                </td>
+                {stat.headers?.extra && <td>{r.extra}</td>}
               </tr>
             ))}
           </tbody>
@@ -402,25 +738,43 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  async function load(e) {
+  async function load(e, id = leagueId) {
     e?.preventDefault()
-    if (!leagueId) return
+    if (!id) return
     setLoading(true)
     setError(null)
     setLeague(null)
     setOpenTeam(null)
     setOpenStat(null)
     try {
-      const res = await fetch(`/api/league/${leagueId}`)
+      const res = await fetch(`/api/league/${id}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Request failed')
       setLeague(data)
+      history.pushState(null, '', `?league=${id}`)
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
     }
   }
+
+  // ?league=<id> deep link — auto-load on open and on back/forward.
+  useEffect(() => {
+    const fromUrl = () => {
+      const id = new URLSearchParams(location.search).get('league')
+      if (id) {
+        setLeagueId(id)
+        load(null, id)
+      } else {
+        setLeague(null)
+      }
+    }
+    fromUrl()
+    window.addEventListener('popstate', fromUrl)
+    return () => window.removeEventListener('popstate', fromUrl)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <main>
@@ -458,6 +812,8 @@ function App() {
               <tr>
                 <th>#</th>
                 <th>Team</th>
+                <th title="Avg buy-in ownership of current squad">Template %</th>
+                <th title="Differential buys actually played">Diffs</th>
                 <th>Official</th>
                 <th>Bonus</th>
                 <th>Alt Pts</th>
@@ -475,6 +831,15 @@ function App() {
                   <td>
                     <strong>{t.entryName}</strong>
                     <small className="old-rank"> {t.manager}</small>
+                    {teamTitle(t) && (
+                      <span className={`title-badge ${teamTitle(t).kind}`}>
+                        {teamTitle(t).label}
+                      </span>
+                    )}
+                  </td>
+                  <td>{templatePct(t)?.toFixed(1) ?? '—'}%</td>
+                  <td title="Share of played picks that were low-owned buys">
+                    {t.report ? `${diffStarts(t)} (${Math.round((diffShare(t) ?? 0) * 100)}%)` : '—'}
                   </td>
                   <td>{t.official}</td>
                   <td className="bonus">
@@ -503,8 +868,12 @@ function App() {
                 onClick={() => setOpenStat(s)}
               >
                 <div className="stat-title">{s.title}</div>
-                <div className="stat-team">{s.empty ? 'Nobody' : s.rows[0].label}</div>
-                <div className="stat-detail">{s.empty ?? s.rows[0].value}</div>
+                <div className="stat-team">
+                  {s.empty ? 'Nobody' : (s.rows[0].cardLabel ?? s.rows[0].label)}
+                </div>
+                <div className="stat-detail">
+                  {s.empty ?? s.rows[0].cardValue ?? s.rows[0].value}
+                </div>
               </div>
             ))}
           </div>
@@ -513,20 +882,23 @@ function App() {
 
       {openStat && <StatModal stat={openStat} onClose={() => setOpenStat(null)} />}
 
-      {openTeam && <TeamModal team={openTeam} onClose={() => setOpenTeam(null)} />}
+      {openTeam && (
+        <TeamModal team={openTeam} teams={league.teams} onClose={() => setOpenTeam(null)} />
+      )}
 
       <details className="methodology">
         <summary>How it's calculated</summary>
         <ul>
           <li>
-            <strong>Scouting bonus (tiered):</strong> for every GW a player scores &gt;4 pts
-            while on your team — +4 if bought at &lt;2% ownership, +3 at &lt;5%, +2 at
-            &lt;10%. Multiplied by the captain multiplier.
+            <strong>Scouting bonus (curve):</strong> for every GW a player scores &gt;4 pts
+            while on your team — +4 if bought at ≤2% ownership, then decays linearly
+            to 0 at 10%. Multiplied by the captain multiplier.
           </li>
           <li>
             <strong>Ownership at buy:</strong> the FPL API only snapshots ownership at each GW
             deadline. We interpolate between the snapshots bracketing your transfer window,
-            weighted by the exact transfer timestamp. Initial squad uses the GW1 snapshot.
+            weighted by the exact transfer timestamp. Initial squad uses the
+            snapshot of the GW the team joined.
           </li>
           <li>
             <strong>Ownership %</strong> = selected ÷ teams ranked in that GW.

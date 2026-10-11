@@ -232,6 +232,36 @@ tr.bench td {
   font-size: 12px;
 }
 
+.title-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  margin-left: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--text-h);
+  vertical-align: middle;
+}
+
+.title-badge.good {
+  background: rgba(0, 163, 92, 0.15);
+  color: #00a35c;
+}
+
+.title-badge.shame {
+  background: rgba(229, 72, 77, 0.15);
+  color: #e5484d;
+}
+
+.doppel {
+  font-size: 12px;
+  color: var(--text);
+  margin: 4px 0 0;
+}
+
 .delta.up {
   color: #00a35c;
   font-weight: 700;
@@ -280,7 +310,7 @@ tr.bench td {
 
 .fun-stats {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 10px;
   margin-bottom: 24px;
 }
@@ -331,6 +361,10 @@ tr.bench td {
   max-width: 420px;
 }
 
+.modal-wide {
+  max-width: 900px;
+}
+
 .stat-modal-title {
   color: var(--text-h);
   font-size: 18px;
@@ -345,6 +379,25 @@ tr.bench td {
 .stat-empty {
   color: var(--text);
   font-style: italic;
+}
+
+.tip {
+  position: relative;
+  cursor: help;
+}
+
+.tip-body {
+  position: fixed;
+  z-index: 20;
+  min-width: 120px;
+  max-width: 320px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--text-h);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: nowrap;
 }
 
 .stat-winner td {

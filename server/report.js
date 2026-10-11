@@ -1,16 +1,24 @@
 import { api, mapLimit } from './fpl.js';
 
 const BONUS_THRESHOLD = 4; // player GW points must be strictly greater
-const BONUS_TIERS = [
-  { below: 2, points: 4 },
-  { below: 5, points: 3 },
-  { below: 10, points: 2 },
-];
-export const BONUS_RULE = { scoreAbove: BONUS_THRESHOLD, tiers: BONUS_TIERS };
+const BONUS_MAX = 4;
+const BONUS_FLAT_UNTIL = 2; // % — full bonus at/below this ownership
+const BONUS_ZERO_AT = 10; // % — decay reaches 0 here
+const BONUS_P = 1; // decay exponent: 1 = linear, <1 generous, >1 punishing
+export const BONUS_RULE = {
+  scoreAbove: BONUS_THRESHOLD,
+  max: BONUS_MAX,
+  flatUntil: BONUS_FLAT_UNTIL,
+  zeroAt: BONUS_ZERO_AT,
+};
 
-// Base bonus for a given buy-time ownership %; 0 = not eligible.
+// Flat +4 up to 2% ownership, then smooth decay to 0 at 10% — no cliff.
+// Rounded to nearest 0.5; halves stay exact so displayed sums stay clean.
 function bonusFor(ownershipPct) {
-  return BONUS_TIERS.find((t) => ownershipPct < t.below)?.points ?? 0;
+  if (ownershipPct >= BONUS_ZERO_AT) return 0;
+  if (ownershipPct <= BONUS_FLAT_UNTIL) return BONUS_MAX;
+  const t = (BONUS_ZERO_AT - ownershipPct) / (BONUS_ZERO_AT - BONUS_FLAT_UNTIL);
+  return Math.round(BONUS_MAX * Math.pow(t, BONUS_P) * 2) / 2;
 }
 
 // Ownership % at the moment of the transfer: linear interpolation between the
@@ -18,9 +26,11 @@ function bonusFor(ownershipPct) {
 // Initial-squad players (no transfer record) use the GW1 snapshot.
 function ownershipAtBuy(buy, buyGw, rounds, events, denom) {
   const selAt = (gw) => rounds?.get(gw)?.selected;
+  // Initial squad (no transfer record) uses the snapshot of the GW the team
+  // joined — GW1 for most, later for entries created mid-season.
   if (!buy || buyGw === 1) {
-    const s = selAt(1);
-    return s == null ? null : (s / denom(1)) * 100;
+    const s = selAt(buyGw);
+    return s == null ? null : (s / denom(buyGw)) * 100;
   }
   const selN = selAt(buy.event);
   const selPrev = selAt(buy.event - 1);
@@ -136,7 +146,7 @@ export async function buildReport(teamId) {
       const playerPoints =
         gw === currentGw ? (livePoints.get(pick.element) ?? round.points) : round.points;
       const buy = buyRecordFor(pick.element, gw);
-      const buyGw = buy?.event ?? 1;
+      const buyGw = buy?.event ?? entry.started_event ?? 1;
       const buyRounds = summaries.get(pick.element);
       const ownershipPct = ownershipAtBuy(buy, buyGw, buyRounds, events, denom);
       const eligible = ownershipPct != null && bonusFor(ownershipPct) > 0;
@@ -160,6 +170,9 @@ export async function buildReport(teamId) {
         multiplier: pick.multiplier,
         points: playerPoints,
         buyGw,
+        isInitial: buy == null,
+        justBought: buy != null && buy.event === gw,
+        prevPts: summaries.get(pick.element)?.get(gw - 1)?.points ?? null,
         ownershipPct: ownershipPct == null ? null : +ownershipPct.toFixed(1),
         nowOwn: el ? +el.selected_by_percent : null,
         eligible,
@@ -199,8 +212,47 @@ export async function buildReport(teamId) {
       .map(([id, v]) => ({ id, ...v }))
       .sort((a, b) => b.bonus - a.bonus)[0] ?? null;
 
+  // Sold too early: players who left the squad, then hauled in a later GW while
+  // their buy-in ownership was still low enough to have earned a bonus.
+  const lastGwByEl = new Map(); // id -> {gw, own, name}
+  for (const g of gws)
+    for (const p of g.picks)
+      lastGwByEl.set(p.id, { gw: g.event, own: p.ownershipPct, name: p.name });
+  const soldEarly = [];
+  for (const [id, info] of lastGwByEl) {
+    const rounds = summaries.get(id);
+    if (!rounds || info.own == null || bonusFor(info.own) <= 0) continue;
+    // Free Hit rental: last squad GW was the FH and he wasn't owned before it —
+    // he was never staying, so leaving isn't a sale.
+    if (
+      picksByGw.get(info.gw)?.active_chip === 'freehit' &&
+      !squadAt(info.gw - 1)?.has(id)
+    )
+      continue;
+    const later = [...rounds.entries()].sort((a, b) => a[0] - b[0]);
+    for (const [round, r] of later) {
+      // A haul during a FH GW doesn't count if the player was in the squad the
+      // GW before — that absence is the FH blip, not a real sale. (Permanently
+      // sold players are absent the prior GW too, so they still flag.)
+      const fhBlip =
+        picksByGw.get(round)?.active_chip === 'freehit' && squadAt(round - 1)?.has(id);
+      if (round > info.gw && !fhBlip && r.points > BONUS_THRESHOLD) {
+        soldEarly.push({
+          id,
+          name: info.name,
+          soldAfter: info.gw,
+          hauled: round,
+          points: r.points,
+          own: info.own,
+        });
+        break;
+      }
+    }
+  }
+
   return {
     topPick,
+    soldEarly,
     team: {
       id: entry.id,
       name: entry.name,
