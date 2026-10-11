@@ -1,13 +1,42 @@
 import { api, mapLimit } from './fpl.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildReport, BONUS_RULE } from './report.js';
 
 const MAX_TEAMS = 25;
 const LEAGUE_TTL = 60 * 1000;
 const leagueCache = new Map(); // id -> {at, data}
 
+// --- tiny usage stats, persisted alongside the API cache ---
+const statsFile = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '.cache',
+  'stats.json'
+);
+let stats = { lookups: 0, leagues: {} };
+try {
+  stats = JSON.parse(await fs.readFile(statsFile, 'utf8'));
+} catch {
+  /* fresh start */
+}
+let statsTimer = null;
+function bumpStat(leagueId) {
+  stats.lookups++;
+  stats.leagues[leagueId] = (stats.leagues[leagueId] ?? 0) + 1;
+  clearTimeout(statsTimer);
+  statsTimer = setTimeout(() => {
+    fs.mkdir(path.dirname(statsFile), { recursive: true })
+      .then(() => fs.writeFile(statsFile, JSON.stringify(stats)))
+      .catch(() => {});
+  }, 2000);
+}
+export const getStats = () => stats;
+
 export async function buildLeague(leagueId) {
   const hit = leagueCache.get(leagueId);
   if (hit && Date.now() - hit.at < LEAGUE_TTL) return hit.data;
+  bumpStat(leagueId);
   const data = await buildLeagueUncached(leagueId);
   leagueCache.set(leagueId, { at: Date.now(), data });
   return data;

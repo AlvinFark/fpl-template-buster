@@ -2,13 +2,15 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildReport } from './report.js';
-import { buildLeague } from './league.js';
+import { buildLeague, getStats } from './league.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+app.get('/api/stats', (_req, res) => res.json(getStats()));
 
 app.get('/api/league/:leagueId', async (req, res) => {
   const leagueId = Number(req.params.leagueId);
